@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Launch the standalone Sprint Manager service, then open http://127.0.0.1:8766 .
+#
+# The app is standalone; it works on the repos registered as projects (profiles under
+# ~/.config/sprint-manager/projects/ — see docs/projects.md). Credentials come from your shell,
+# .env, or ⚙ Settings → Credentials.
+set -euo pipefail
+
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$APP_DIR/scripts"
+
+# First run: create the venv and install dependencies.
+if [ ! -d .venv ]; then
+  echo "First run: creating virtualenv and installing dependencies…"
+  python3 -m venv .venv
+  ./.venv/bin/pip install -q -e .
+fi
+
+echo "Sprint Manager → http://127.0.0.1:${SPRINT_MANAGER_PORT:-8766}"
+exec ./.venv/bin/python -m sprint_manager.server

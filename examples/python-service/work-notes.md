@@ -1,0 +1,2 @@
+- Run `.venv/bin/ruff check .` before every commit.
+- Preflight for the integration suite: `--need postgres`.

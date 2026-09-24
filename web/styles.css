@@ -1,0 +1,255 @@
+/* Minimal, dependency-free styling for the sprint-manager dashboard.
+   All colors are CSS variables so the whole UI can switch between light and dark themes
+   (VSCode-style). The light palette lives in :root; [data-theme="dark"] overrides it. */
+:root {
+  color-scheme: light;
+  --bg: #f7f7f5; --panel: #fff; --line: #e2e2dd; --ink: #222; --muted: #888; --subtle: #555;
+  --hover: #f0f0ec; --th-bg: #fafaf8; --btn-bg: #fff; --input-bg: #fff;
+  --stage-bg: #e9ecff; --stage-ink: #33408a;
+  --tab-active-bg: #334466; --tab-active-ink: #fff;
+  --link: #2457c5; --transcript-bg: #fbfbf9;
+  --ev-text: #222; --ev-user: #2457c5; --ev-thinking: #888; --ev-tool: #6741d9; --ev-system: #e8590c;
+  /* activity colors — vivid enough to read on both themes (white text on a colored badge) */
+  --working: #2f9e44; --queued: #4263eb; --waiting-user: #e03131; --waiting-external: #f08c00; --idle: #adb5bd;
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1e1e1e; --panel: #252526; --line: #3c3c3c; --ink: #d4d4d4; --muted: #9a9a9a; --subtle: #b0b0b0;
+  --hover: #2a2d2e; --th-bg: #2d2d2d; --btn-bg: #333; --input-bg: #2d2d2d;
+  --stage-bg: #2c3350; --stage-ink: #aab6ff;
+  --tab-active-bg: #094771; --tab-active-ink: #fff;
+  --link: #5a9cff; --transcript-bg: #1b1b1b;
+  --ev-text: #d4d4d4; --ev-user: #5a9cff; --ev-thinking: #9a9a9a; --ev-tool: #c586c0; --ev-system: #e8915c;
+  --working: #3fb457; --queued: #5878f0; --waiting-user: #f0595a; --waiting-external: #f5a33a; --idle: #6c6c6c;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; font: 14px/1.45 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  color: var(--ink); background: var(--bg);
+}
+header { position: relative; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+h1 { margin: 0 0 8px; font-size: 18px; }
+.loader input, .loader select, .projectbar select, .sm-dialog input, .sm-dialog select, .sm-dialog textarea {
+  padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--input-bg); color: var(--ink);
+}
+.loader { margin-top: 8px; }
+.projectbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+button.primary { background: var(--tab-active-bg); color: var(--tab-active-ink); border-color: var(--tab-active-bg); }
+button.primary:hover { filter: brightness(1.1); background: var(--tab-active-bg); }
+.hidden { display: none !important; }
+/* ---- dialogs (New task, problem statement) ---- */
+.sm-dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink);
+  width: min(760px, calc(100vw - 32px)); padding: 16px 20px; }
+.sm-dialog::backdrop { background: rgba(0, 0, 0, .35); }
+.sm-dialog h3 { margin: 0 0 12px; font-size: 16px; }
+.sm-dialog label { display: block; margin: 8px 0; font-size: 13px; color: var(--subtle); }
+.sm-dialog label input, .sm-dialog label select, .sm-dialog label textarea { display: block; width: 100%; margin-top: 4px; font: inherit; }
+.sm-dialog textarea { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.sm-dialog section { padding: 0; }
+.sm-dialog menu { display: flex; justify-content: flex-end; gap: 8px; padding: 0; margin: 14px 0 0; }
+.task-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
+.task-tabs button.active { background: var(--stage-bg); color: var(--stage-ink); border-color: var(--stage-ink); }
+.task-batch { margin: 8px 0; font-size: 13px; color: var(--subtle); }
+.task-batch input { padding: 4px 6px; }
+button { padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--btn-bg); color: var(--ink); cursor: pointer; }
+button:hover { background: var(--hover); }
+.muted { color: var(--muted); }
+section { padding: 16px 20px; }
+
+/* Theme toggle, pinned to the top-right of the header. */
+.theme-toggle { position: absolute; top: 14px; right: 20px; padding: 4px 10px; font-size: 14px; }
+
+table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; background: var(--th-bg); font-size: 12px; color: var(--subtle); }
+/* Each ticket is a two-row <tbody class="issue">: a status line + a full-width summary line.
+   Hover/click apply to the whole group; the row divider sits only after the summary. */
+tbody.issue { cursor: pointer; }
+tbody.issue:hover td { background: var(--th-bg); }
+tbody.issue tr.main td { border-bottom: none; padding-bottom: 2px; }
+tbody.issue tr.summary td { color: var(--subtle); padding-top: 0; padding-left: 18px; }
+td.note { max-width: 360px; color: var(--subtle); }
+
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; color: #fff; }
+.activity-working { background: var(--working); }
+.activity-queued { background: var(--queued); }
+.activity-waiting_user { background: var(--waiting-user); }
+.activity-waiting_external { background: var(--waiting-external); }
+.activity-idle { background: var(--idle); }
+.stage { display: inline-block; padding: 2px 8px; border-radius: 6px; background: var(--stage-bg); color: var(--stage-ink); font-size: 12px; }
+
+/* PR link badge in the panel head (shown only once a PR is open). Reads as a clickable pill. */
+.pr-link { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; text-decoration: none; background: var(--stage-bg); color: var(--link); border: 1px solid var(--line); }
+.pr-link:hover { background: var(--hover); }
+.pr-link.hidden { display: none; }
+
+.detail-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+.tab { padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); cursor: pointer; font-size: 13px; }
+.tab.active { background: var(--tab-active-bg); color: var(--tab-active-ink); border-color: var(--tab-active-bg); }
+.tab .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.panel.hidden { display: none; }
+.panel-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.panel-head a { font-weight: 600; text-decoration: none; color: var(--link); }
+button.fontbtn { padding: 2px 8px; font-size: 12px; line-height: 1.2; }
+.transcript { height: 360px; min-height: 120px; resize: vertical; overflow-y: auto; background: var(--transcript-bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; font-size: 13px; }
+
+/* ---- Maximized workspace: the open ticket's panel fills the whole viewport ---- */
+/* Toggled by the ⛶ button (body.workspace-max). Hide the header + overview, pin #detail to the
+   viewport, and let the panel + transcript flex-grow to fill the height (chat stays pinned bottom). */
+body.workspace-max header,
+body.workspace-max #overview { display: none; }
+body.workspace-max #detail {
+  position: fixed; inset: 0; z-index: 150; margin: 0; padding: 10px 16px;
+  background: var(--bg); display: flex; flex-direction: column;
+}
+body.workspace-max #panel { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+/* height:auto overrides both the 360px default and any dragged inline height while maximized. */
+body.workspace-max #transcript { flex: 1 1 auto; height: auto !important; min-height: 0; resize: none; }
+.panel-head { flex-wrap: wrap; }
+.ev { margin-bottom: 8px; white-space: pre-wrap; word-break: break-word; }
+.ev-user { color: var(--ev-user); } .ev-text { color: var(--ev-text); } .ev-thinking { color: var(--ev-thinking); font-style: italic; }
+.ev-tool { color: var(--ev-tool); font-family: ui-monospace, monospace; font-size: 12px; }
+.ev-result { color: var(--working); } .ev-system { color: var(--ev-system); }
+.chat { display: flex; gap: 8px; margin-top: 10px; align-items: flex-end; }
+.chat textarea {
+  flex: 1; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--input-bg); color: var(--ink);
+  font: inherit; line-height: 1.4; resize: none;     /* JS auto-grows the height */
+  overflow-y: auto; max-height: 200px;               /* wrap + grow to fit, scroll past ~10 lines */
+}
+
+/* Generic utility + new interactive bits (close-tab, start feedback, approve). */
+.hidden { display: none; }
+.tab .x { margin-left: 8px; color: var(--muted); font-weight: 700; }
+.tab .x:hover { color: var(--waiting-user); }
+.tab.active .x { color: #cdd; }
+button.approve { background: var(--working); color: #fff; border-color: var(--working); margin-left: auto; }
+button.approve:hover { filter: brightness(1.05); }
+button.stop { background: var(--waiting-user); color: #fff; border-color: var(--waiting-user); margin-left: auto; }
+button.stop:hover { filter: brightness(1.05); }
+select#panel-goto-stage { padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--btn-bg); color: var(--ink); cursor: pointer; font-size: 13px; margin-left: auto; }
+select#panel-goto-stage.hidden { display: none; }
+button.remove { padding: 4px 8px; color: var(--muted); }
+button.remove:hover { color: #fff; background: var(--waiting-user); border-color: var(--waiting-user); }
+button.remove:disabled { color: var(--line); background: var(--btn-bg); border-color: var(--line); cursor: default; }
+
+/* Queue display: shows messages pending execution */
+.queue-display {
+  background: var(--transcript-bg); border: 1px dashed var(--queued); border-radius: 6px; padding: 8px;
+  margin-bottom: 8px; font-size: 12px; color: var(--muted);
+}
+.queue-display.hidden { display: none; }
+.queue-item {
+  margin-bottom: 6px; padding: 6px; background: var(--panel); border-left: 3px solid var(--queued);
+  border-radius: 3px; word-break: break-word; white-space: pre-wrap;
+}
+.queue-item:last-child { margin-bottom: 0; }
+.queue-label { display: block; font-weight: 600; color: var(--queued); margin-bottom: 4px; }
+
+/* ---- Settings gear button (header, left of theme toggle) ---- */
+button.settings-gear-btn { position: absolute; top: 14px; right: 62px; padding: 4px 10px; font-size: 14px; }
+
+/* ---- Settings drawer ---- */
+#settings-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 200;
+}
+#settings-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 500px; max-width: 100vw;
+  background: var(--panel); border-left: 1px solid var(--line);
+  z-index: 201; display: flex; flex-direction: column;
+  transform: translateX(100%); transition: transform 0.2s ease;
+}
+#settings-drawer.open { transform: translateX(0); }
+.settings-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; border-bottom: 1px solid var(--line); font-weight: 600; flex-shrink: 0;
+}
+#settings-close { padding: 4px 9px; }
+.settings-body { display: flex; flex: 1; overflow: hidden; }
+.settings-nav {
+  width: 130px; border-right: 1px solid var(--line); padding: 10px 6px;
+  display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; overflow-y: auto;
+}
+.settings-nav-item {
+  text-align: left; padding: 8px 12px; border: none; background: transparent;
+  border-radius: 6px; color: var(--ink); cursor: pointer; font-size: 13px;
+}
+.settings-nav-item:hover { background: var(--hover); }
+.settings-nav-item.active { background: var(--stage-bg); color: var(--stage-ink); font-weight: 600; }
+.settings-content { flex: 1; overflow-y: auto; padding: 16px; }
+.settings-section { display: none; }
+.settings-section.active { display: block; }
+.settings-section-title { margin: 0 0 14px; font-size: 14px; font-weight: 600; }
+.settings-table { width: 100%; border-collapse: collapse; }
+.settings-table th {
+  text-align: left; padding: 6px 10px; font-size: 12px; color: var(--muted);
+  border-bottom: 1px solid var(--line); font-weight: 600;
+}
+.settings-table td { padding: 7px 10px; border-bottom: 1px solid var(--line); }
+.settings-table tr:last-child td { border-bottom: none; }
+.settings-stage-cell { font-family: ui-monospace, monospace; font-size: 12px; color: var(--stage-ink); white-space: nowrap; }
+.settings-table select {
+  padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--input-bg); color: var(--ink); width: 100%;
+}
+.settings-table select:disabled { opacity: 0.45; cursor: default; }
+.settings-actions {
+  display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 16px;
+}
+.settings-save-btn {
+  background: var(--working); color: #fff; border-color: var(--working); padding: 6px 18px;
+}
+.settings-save-btn:hover { filter: brightness(1.1); }
+.settings-status { font-size: 12px; }
+.settings-status.ok { color: var(--working); }
+.settings-status.err { color: var(--waiting-user); }
+
+/* ---- Settings: Credentials section ---- */
+.settings-hint { font-size: 12px; color: var(--muted); margin: 0 0 16px; line-height: 1.5; }
+.cred-group { margin-bottom: 16px; }
+.cred-group-title { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--stage-ink); text-transform: uppercase; letter-spacing: 0.03em; }
+.cred-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.cred-row label { font-size: 13px; color: var(--ink); }
+.cred-row input { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--input-bg); color: var(--ink); font: inherit; }
+.cred-set { font-size: 11px; color: var(--working); font-family: ui-monospace, monospace; margin-left: 6px; }
+.cred-external-title { margin-top: 20px; }
+.cred-external-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; }
+.cred-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.cred-dot.ok { background: var(--working); }
+.cred-dot.missing { background: var(--waiting-user); }
+.cred-hint { font-size: 12px; color: var(--muted); }
+
+/* ---- pr-open CI + review status indicators (tab dots + panel badges) ---- */
+/* Base = grey (none / running / unknown); specific states override the colour. */
+.pr-light {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-left: 5px; vertical-align: middle; background: var(--idle);
+}
+.pr-light.ci-passed, .pr-light.review-approved { background: var(--working); }   /* green */
+.pr-light.ci-failed { background: var(--waiting-user); }                          /* red   */
+.pr-light.review-changes { background: var(--waiting-external); }                 /* amber */
+.pr-light.review-commented { background: var(--queued); }                         /* blue  */
+/* The review dot is clickable (re-arm the review channel). Cursor + a hover ring make it discoverable. */
+.pr-light-review { cursor: pointer; }
+.pr-light-review:hover { box-shadow: 0 0 0 2px var(--muted); }
+
+.pr-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 12px;
+  background: var(--stage-bg); color: var(--stage-ink);
+}
+.pr-badge.hidden { display: none; }
+.pr-badge.ci-none, .pr-badge.review-none { background: var(--idle); color: #fff; }  /* grey = watching/waiting */
+.pr-badge.ci-passed, .pr-badge.review-approved { background: var(--working); color: #fff; }
+.pr-badge.ci-failed { background: var(--waiting-user); color: #fff; }
+.pr-badge.review-changes { background: var(--waiting-external); color: #fff; }
+.pr-badge.review-commented { background: var(--queued); color: #fff; }
+/* The review badge is clickable (re-arm the review channel). */
+.pr-badge-review { cursor: pointer; }
+.pr-badge-review:hover { filter: brightness(1.1); }
+
+/* Cache indicator in panel header */
+.cache-indicator { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; color: #fff; background: #888; }
+.cache-indicator.warning { background: var(--waiting-user); font-weight: 600; }
+.cache-indicator.empty { display: none; }

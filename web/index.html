@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sprint Manager</title>
+  <link rel="icon" href="/icon.svg" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <button id="theme-toggle" class="theme-toggle" title="Toggle dark / light theme">🌙</button>
+    <button id="settings-gear" class="settings-gear-btn" title="Settings">⚙</button>
+    <h1>Sprint Manager</h1>
+    <div class="projectbar">
+      <select id="project" title="Show tasks of one project, or all"></select>
+      <button id="add-project" title="Register a git checkout as a project">＋ Project</button>
+      <button id="new-task" class="primary" title="Describe a problem, or add a GitHub issue / Slack thread / Jira issue">＋ New task</button>
+      <span id="add-msg" class="muted"></span>
+    </div>
+    <div class="loader hidden" id="jira-loader">
+      <select id="sprint"></select>
+      <button id="load">Load sprint</button>
+      <span id="load-msg" class="muted"></span>
+    </div>
+  </header>
+
+  <!-- New task: one form per source. -->
+  <dialog id="task-dialog" class="sm-dialog">
+    <form id="task-form" method="dialog">
+      <h3>New task</h3>
+      <div class="task-tabs">
+        <button type="button" data-tracker="text" class="active">Describe it</button>
+        <button type="button" data-tracker="github">GitHub issue</button>
+        <button type="button" data-tracker="slack">Slack thread</button>
+        <button type="button" data-tracker="jira">Jira issue</button>
+      </div>
+      <label>Project <select id="task-project"></select></label>
+      <section data-for="text">
+        <label>Title <input id="task-title" type="text" placeholder="Short name for the task" /></label>
+        <label>Kind <select id="task-kind"><option value="feature">feature</option><option value="bug">bug</option></select></label>
+        <label>Problem <textarea id="task-body" rows="10" placeholder="What's wrong / what's wanted. Markdown is fine; paste logs, links (Slack links are fetched)."></textarea></label>
+      </section>
+      <section data-for="github" class="hidden">
+        <label>Issue <input id="task-gh-ref" type="text" placeholder="https://github.com/owner/repo/issues/123  or  #123" /></label>
+        <div class="task-batch">
+          or load open issues: assignee <input id="task-gh-assignee" type="text" value="@me" size="8" />
+          label <input id="task-gh-label" type="text" size="10" />
+          <button type="button" id="task-gh-load">Load issues</button>
+        </div>
+      </section>
+      <section data-for="slack" class="hidden">
+        <label>Thread link <input id="task-slack-ref" type="text" placeholder="https://<workspace>.slack.com/archives/C…/p…" /></label>
+        <label>Title <input id="task-slack-title" type="text" placeholder="(optional — defaults to the first message)" /></label>
+        <label>Kind <select id="task-slack-kind"><option value="feature">feature</option><option value="bug">bug</option></select></label>
+      </section>
+      <section data-for="jira" class="hidden">
+        <label>Issue <input id="issue-url" type="text" placeholder="Jira issue URL or key (e.g. ABC-12345)" /></label>
+        <p class="muted" id="task-jira-hint"></p>
+      </section>
+      <div id="task-msg" class="muted"></div>
+      <menu>
+        <button type="button" id="task-cancel">Cancel</button>
+        <button type="button" id="task-create" class="primary">Create</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <!-- Edit a text task's problem statement. -->
+  <dialog id="text-dialog" class="sm-dialog">
+    <form method="dialog">
+      <h3>Problem statement <span id="text-dialog-ticket" class="muted"></span></h3>
+      <textarea id="text-body" rows="16"></textarea>
+      <div id="text-msg" class="muted"></div>
+      <menu>
+        <button type="button" id="text-cancel">Cancel</button>
+        <button type="button" id="text-save" class="primary">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <!-- High-level table: one row per ticket -->
+  <section id="overview">
+    <table id="overview-table">
+      <thead>
+        <tr>
+          <th>Task</th><th>Project</th><th>Kind</th><th>Tracker</th><th>Stage</th><th>Activity</th>
+          <th>Note</th><th>CI</th><th>Cost</th><th></th>
+        </tr>
+      </thead>
+      <!-- One <tbody class="issue"> per ticket is appended here (two rows each: status + summary). -->
+    </table>
+  </section>
+
+  <!-- Round-robin + per-ticket detail/chat -->
+  <section id="detail">
+    <div class="detail-bar">
+      <div id="tabs" class="tabs"></div>
+      <button id="next" title="Jump to the next agent that needs you">Next ⚠ needs you</button>
+    </div>
+    <div id="panel" class="panel hidden">
+      <div class="panel-head">
+        <a id="panel-jira" href="#" target="_blank" rel="noopener"></a>
+        <span id="panel-stage" class="badge"></span>
+        <a id="panel-pr" class="pr-link hidden" href="#" target="_blank" rel="noopener" title="Open the PR on GitHub"></a>
+        <span id="panel-activity" class="badge"></span>
+        <span id="panel-ci" class="pr-badge hidden" title="CI build status"></span>
+        <span id="panel-review" class="pr-badge hidden" title="Code review status"></span>
+        <span id="panel-cache" class="cache-indicator"></span>
+        <button id="font-dec" class="fontbtn" title="Smaller text">A−</button>
+        <button id="font-inc" class="fontbtn" title="Larger text">A+</button>
+        <button id="panel-max" class="fontbtn" title="Expand workspace to full screen (Esc to exit)">⛶</button>
+        <button id="panel-edit-text" class="fontbtn hidden" title="Edit this task's problem statement">✎ Problem</button>
+        <button id="panel-file-issue" class="fontbtn hidden" title="Create a GitHub issue from this task (problem + acceptance criteria); the PR will then close it">⇪ File as issue</button>
+        <button id="panel-start" class="approve hidden">Start ▶</button>
+        <button id="panel-approve" class="approve hidden">Approve → next stage ▶</button>
+        <button id="panel-ship" class="approve hidden" title="Commit check, final recap + PR text, push, open the PR, update the tracker">Ship ▶</button>
+        <button id="panel-trigger-ci" class="approve hidden" title="Start a CI build for this PR (the only way CI starts)">Trigger CI</button>
+        <button id="panel-stop" class="stop hidden">⏹ Stop</button>
+        <button id="panel-compact" class="stop hidden" title="Get a full recap of your work, then continue this stage with a trimmed session">⟳ Compact</button>
+        <select id="panel-goto-stage" class="hidden" title="Jump to a different stage">
+          <!-- options are populated from GET /api/config (models.WORKING_STAGES) at load -->
+          <option value="">↩ go to stage…</option>
+        </select>
+      </div>
+      <div id="transcript" class="transcript"></div>
+      <div id="queue-display" class="queue-display hidden"></div>
+      <div class="chat">
+        <textarea id="chat-input" rows="1" placeholder="Message this task's agent…  (Enter to send, Shift+Enter for newline, /compact to trim context)"></textarea>
+        <button id="chat-send">Send</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Settings drawer -->
+  <div id="settings-overlay" class="hidden"></div>
+  <div id="settings-drawer">
+    <div class="settings-header">
+      <span>⚙ Settings</span>
+      <button id="settings-close">✕</button>
+    </div>
+    <div class="settings-body">
+      <nav class="settings-nav">
+        <button class="settings-nav-item active" data-section="models">Models</button>
+        <button class="settings-nav-item" data-section="credentials">Credentials</button>
+        <!-- Future categories go here: Stages, Concurrency, … -->
+      </nav>
+      <div class="settings-content">
+        <section id="settings-models" class="settings-section">
+          <!-- populated by JS on open -->
+        </section>
+        <section id="settings-credentials" class="settings-section">
+          <!-- populated by JS on open -->
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

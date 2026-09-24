@@ -1,0 +1,23 @@
+[project]
+name = "sprint-manager-scripts"
+version = "0.1.0"
+description = "Helper scripts and orchestration service bundled with the sprint-manager Claude Code plugin."
+requires-python = ">=3.11"
+dependencies = [
+  # Orchestration service (phases 3-4). The zero-LLM CLI layer (phase 1) deliberately
+  # uses only the standard library so it runs without installing anything.
+  "claude-agent-sdk>=0.2.94",
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["sprint_manager"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100

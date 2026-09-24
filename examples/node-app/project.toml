@@ -1,0 +1,9 @@
+# A Node web app: zero-config CI (GitHub checks), tasks from GitHub issues and Slack threads.
+repo = "~/src/storefront"
+base_branch = "main"
+
+[prompts]
+test_commands = "test-commands.md"
+
+[slack]
+react = true              # needs the bot scope reactions:write

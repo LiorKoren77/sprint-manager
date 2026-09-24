@@ -1,0 +1,13 @@
+# A Python service with a Postgres dependency, CI on GitHub Actions, issues on GitHub.
+repo = "~/src/billing-service"
+
+[prompts]
+test_commands = "test-commands.md"
+work = "work-notes.md"
+
+[preflight]
+ports = { postgres = { port = 5432, hint = "docker compose up -d db" } }
+paths = { "virtualenv" = ".venv" }
+
+[github]
+assign_self = true
