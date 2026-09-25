@@ -43,8 +43,12 @@ class ProfileLoadingTest(unittest.TestCase):
                               '[prompts]\nwork = "work.md"\n', {"work.md": "repo work notes"},
                               where=repo / ".sprint-manager")
         p = project.load("layered")
-        self.assertEqual(p.skills, ["b"])                               # repo-local wins
-        self.assertEqual(p.ci, {"provider": "jenkins", "url": "http://other", "job": "/job/x/PR-{pr}"})
+        # A repo-local profile may NOT redirect credentials or widen the agent's reach (security):
+        # skills / [ci] stay personal, and the ignored keys are reported.
+        self.assertEqual(p.skills, ["a"])
+        self.assertEqual(p.ci, {"provider": "jenkins", "url": "http://ci", "job": "/job/x/PR-{pr}"})
+        self.assertTrue(any("ignored ['ci', 'skills']" in w for w in p.warnings), p.warnings)
+        # …but its prompt files do apply, resolved against its own directory.
         self.assertEqual(p.prompts["notes"], (personal / "mine.md").resolve())
         self.assertEqual(p.prompts["work"], (local / "work.md").resolve())
         self.assertEqual(p.prompt_text("work"), "repo work notes")

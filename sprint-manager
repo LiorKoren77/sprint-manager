@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch the standalone Sprint Manager service, then open http://127.0.0.1:8766 .
+# Launch the standalone Sprint Manager service, then open the URL it prints (…:8766/?token=…).
 #
 # The app is standalone; it works on the repos registered as projects (profiles under
 # ~/.config/sprint-manager/projects/ — see docs/projects.md). Credentials come from your shell,

@@ -188,3 +188,14 @@ Same palette used for the table badge, the tab dot, and the panel badges.
 - **New settings category** → add a `<button class="settings-nav-item" data-section="…">` to the
   nav in `index.html`, a matching `<section id="settings-…">` in the drawer body, and the
   load/render/save functions in `app.js`.
+
+
+## Access token
+
+The API and the chat WebSocket require the per-launch token the server prints at startup (see
+`docs/backend.md` → *Local API access control*). The page reads it once from `?token=…`, keeps it
+in `localStorage`, removes it from the address bar, and sends it on every call (a `fetch` wrapper
+adds `X-SM-Token`; the WebSocket URL carries `?token=`). A 401 shows a red banner: the server was
+restarted with a new token — open the newly printed URL. Everything the server returns is escaped
+before it goes into HTML (`escapeHtml`, and `cls()` for class-name fragments); PR links must be
+`https://`.

@@ -12,6 +12,7 @@ Set ``--activity waiting_user`` (and then stop) when the agent needs a human dec
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 
 # Allow ``python sprint_manager/report_stage.py`` (direct file) as well as ``-m`` execution.
@@ -31,9 +32,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--activity", choices=[a.value for a in Activity], help="Agent liveness")
     parser.add_argument("--note", default=None, help="One-line human-readable note")
     parser.add_argument("--branch", default=None, help="Working branch (optional)")
-    parser.add_argument("--pr-url", dest="pr_url", default=None, help="PR URL (optional)")
-    parser.add_argument("--ci-status", dest="ci_status", default=None, help="CI status (optional)")
-    return parser.parse_args(argv)
+    parser.add_argument("--pr-url", dest="pr_url", default=None, help="PR URL (optional, https://…)")
+    # Values the dashboard renders: constrained, so an agent can't smuggle markup or links into the UI.
+    parser.add_argument("--ci-status", dest="ci_status", default=None,
+                        choices=["running", "passed", "failed", "no-build"], help="CI status (optional)")
+    args = parser.parse_args(argv)
+    if args.pr_url is not None and not re.match(r"^https://[^\s<>\"']+$", args.pr_url):
+        parser.error("--pr-url must be an https:// URL")
+    if args.note is not None and len(args.note) > 500:
+        args.note = args.note[:500]
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:

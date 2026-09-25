@@ -19,6 +19,43 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+// ----- access token -----------------------------------------------------------------------
+// The server refuses /api and /ws without the per-launch token it prints at startup (open the
+// "…/?token=…" URL it shows). Take it from the URL once, remember it for reloads, and strip it from
+// the address bar; every API call and WebSocket then carries it.
+const TOKEN = (() => {
+  const url = new URL(location.href);
+  const fromUrl = url.searchParams.get("token");
+  if (fromUrl) {
+    try { localStorage.setItem("sm-token", fromUrl); } catch (_) {}
+    url.searchParams.delete("token");
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
+    return fromUrl;
+  }
+  try { return localStorage.getItem("sm-token") || ""; } catch (_) { return ""; }
+})();
+
+let tokenWarned = false;
+const _fetch = window.fetch.bind(window);
+window.fetch = async (input, init = {}) => {
+  const headers = new Headers(init.headers || {});
+  if (TOKEN) headers.set("X-SM-Token", TOKEN);
+  const resp = await _fetch(input, { ...init, headers });
+  if (resp.status === 401 && !tokenWarned) {
+    tokenWarned = true;
+    const banner = document.createElement("div");
+    banner.className = "token-banner";
+    banner.textContent = "Not authorized: open the dashboard with the URL the server printed at startup "
+      + "(…/?token=…). The token changes every time the server restarts.";
+    document.body.prepend(banner);
+  }
+  return resp;
+};
+
+// Values from the server end up in HTML; escape them all (agents can set some of them), and keep
+// class-name fragments to a safe alphabet.
+const cls = (v) => String(v ?? "").replace(/[^A-Za-z0-9_-]/g, "");
+
 // ----- overview table ---------------------------------------------------------------------
 
 let lastStatusText = null;  // raw /api/status body of the previous poll, to skip no-change renders
@@ -71,20 +108,20 @@ function renderTable() {
     const remove = busy
       ? `<button class="remove" disabled title="Busy — can't remove mid-turn">✕</button>`
       : `<button class="remove" title="Remove from dashboard"
-          onclick="event.stopPropagation(); removeTicket('${r.ticket}')">✕</button>`;
+          onclick="event.stopPropagation(); removeTicket('${cls(r.ticket)}')">✕</button>`;
     const group = document.createElement("tbody");
     group.className = "issue";
     group.onclick = () => openTicket(r.ticket);
     group.innerHTML = `
       <tr class="main">
-        <td><b>${r.ticket}</b></td>
+        <td><b>${escapeHtml(r.ticket)}</b></td>
         <td>${escapeHtml(r.project || "")}</td>
-        <td>${r.kind || ((r.issue_type || "").toLowerCase() === "bug" ? "bug" : "feature")}</td>
+        <td>${escapeHtml(r.kind || ((r.issue_type || "").toLowerCase() === "bug" ? "bug" : "feature"))}</td>
         <td>${escapeHtml(trackerLabel(r))}</td>
-        <td><span class="stage">${r.stage}</span></td>
-        <td><span class="badge activity-${r.activity}">${r.activity}</span></td>
+        <td><span class="stage">${escapeHtml(r.stage)}</span></td>
+        <td><span class="badge activity-${cls(r.activity)}">${escapeHtml(r.activity)}</span></td>
         <td class="note">${escapeHtml(r.note || "")}</td>
-        <td>${r.ci_status || ""}</td>
+        <td>${escapeHtml(r.ci_status || "")}</td>
         <td>$${(r.cost_usd || 0).toFixed(2)}</td>
         <td>${remove}</td>
       </tr>
@@ -113,7 +150,7 @@ function renderTabs() {
     // Plain label so the whole tab is clickable for toggling (the Jira link lives on the
     // issue title inside the panel, not here). For pr-open tickets, two extra dots show CI and
     // review status at a glance — visible from any page since tabs always render.
-    tab.innerHTML = `<span class="dot activity-${r.activity}"></span>${ticket}${prLights(r)}<span class="x" title="Close tab">×</span>`;
+    tab.innerHTML = `<span class="dot activity-${cls(r.activity)}"></span>${escapeHtml(ticket)}${prLights(r)}<span class="x" title="Close tab">×</span>`;
     tab.querySelector(".x").onclick = (e) => { e.stopPropagation(); closeTab(ticket); };
     // The review dot is clickable (pr-open only): re-arm the review channel without opening the tab.
     const rv = tab.querySelector(".pr-light-review");
@@ -132,8 +169,8 @@ function prLights(r) {
   if (!r || r.stage !== "pr-open") return "";
   const ci = ciLightState(r);
   const review = reviewLightState(r);
-  return `<span class="pr-light ci-${ci}" title="${ciTitle(r)}"></span>`
-       + `<span class="pr-light pr-light-review review-${review}" title="${reviewTitle(r)}"></span>`;
+  return `<span class="pr-light ci-${cls(ci)}" title="${escapeHtml(ciTitle(r))}"></span>`
+       + `<span class="pr-light pr-light-review review-${cls(review)}" title="${escapeHtml(reviewTitle(r))}"></span>`;
 }
 
 // The CI indicator's colour key: grey ("none") while armed/watching for the next build result; the
@@ -261,7 +298,7 @@ function renderPanelHeader(r) {
   // opens the PR in a new tab. Hidden (no URL) until Ship ▶ opens it.
   const prEl = $("panel-pr");
   const prNum = (r.pr_url || "").match(/\/pull\/(\d+)/);
-  if (r.pr_url && prNum) {
+  if (r.pr_url && prNum && /^https:\/\//.test(r.pr_url)) {  // only real web links, never javascript:
     prEl.href = r.pr_url;
     prEl.textContent = `PR #${prNum[1]}`;
     prEl.classList.remove("hidden");
@@ -269,7 +306,7 @@ function renderPanelHeader(r) {
     prEl.classList.add("hidden");
   }
 
-  setBadge($("panel-activity"), `activity-${r.activity}`, r.activity);
+  setBadge($("panel-activity"), `activity-${cls(r.activity)}`, r.activity);
 
   // CI + review status badges — shown only in pr-open, driven by the same fields as the tab dots.
   // Both badges mirror their tab dot: coloured while that channel has fired, grey ("waiting") once
@@ -347,7 +384,7 @@ function setBadge(el, cls, text) { el.className = "badge " + cls; el.textContent
 
 function connectSocket(ticket) {
   if (state.socket) state.socket.close();
-  const socket = new WebSocket(`ws://${location.host}/ws/${ticket}`);
+  const socket = new WebSocket(`ws://${location.host}/ws/${encodeURIComponent(ticket)}?token=${encodeURIComponent(TOKEN)}`);
   socket.onmessage = (e) => addEvent(JSON.parse(e.data));
   // A closed socket (server restart, network blip) used to just sit dead — sendChat's only guard
   // was a truthy check on the object reference, which stays true even once it's closed, so a typed
@@ -767,7 +804,8 @@ function setMaximized(on) {
 function toggleMaximize() { setMaximized(!document.body.classList.contains("workspace-max")); }
 
 function escapeHtml(s) {
-  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  return String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 // ----- Settings drawer ---------------------------------------------------------------
@@ -787,7 +825,7 @@ async function fetchAppConfig() {
 function renderGotoStageOptions(stages) {
   const sel = $("panel-goto-stage");
   sel.innerHTML = `<option value="">↩ go to stage…</option>` +
-    stages.map((s) => `<option value="${s}">${s}</option>`).join("");
+    stages.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
 }
 
 function openSettings() {
@@ -830,8 +868,8 @@ function renderCredentialsSection(data) {
   }
   const fieldRow = (f) => `
     <div class="cred-row">
-      <label>${f.label}${f.set ? ' <span class="cred-set">✓ ' + escapeHtml(f.value) + '</span>' : ''}</label>
-      <input type="${f.secret ? "password" : "text"}" class="cred-input" data-key="${f.key}"
+      <label>${escapeHtml(f.label)}${f.set ? ' <span class="cred-set">✓ ' + escapeHtml(f.value) + '</span>' : ''}</label>
+      <input type="${f.secret ? "password" : "text"}" class="cred-input" data-key="${escapeHtml(f.key)}"
              placeholder="${f.set ? "(leave blank to keep current)" : "(not set)"}" />
     </div>`;
   const groupsHtml = Object.entries(groups).map(([group, fields]) => `
@@ -897,7 +935,7 @@ function renderModelsSection(cfg) {
   // Single-pass render: `selected`/`disabled` are emitted directly in the template, so there is
   // no separate restore pass that could drift from it.
   const modelOpts = (sel) => (cfg.model_options || []).map((o) =>
-    `<option value="${o.value}"${o.value === sel ? " selected" : ""}>${o.label}</option>`).join("");
+    `<option value="${escapeHtml(o.value)}"${o.value === sel ? " selected" : ""}>${escapeHtml(o.label)}</option>`).join("");
   const effortOpts = (sel) => `<option value="">—</option>` +
     EFFORT_OPTIONS.map((e) => `<option value="${e}"${e === sel ? " selected" : ""}>${e}</option>`).join("");
 
@@ -907,9 +945,9 @@ function renderModelsSection(cfg) {
       <thead><tr><th>Stage</th><th>Model</th><th>Effort</th></tr></thead>
       <tbody>
         ${cfg.models.map((row) => `<tr>
-            <td class="settings-stage-cell">${row.stage}</td>
-            <td><select class="sm-model" data-stage="${row.stage}">${modelOpts(row.model)}</select></td>
-            <td><select class="sm-effort" data-stage="${row.stage}"${noEffort.has(row.model) ? " disabled" : ""}>${effortOpts(row.effort || "")}</select></td>
+            <td class="settings-stage-cell">${escapeHtml(row.stage)}</td>
+            <td><select class="sm-model" data-stage="${escapeHtml(row.stage)}">${modelOpts(row.model)}</select></td>
+            <td><select class="sm-effort" data-stage="${escapeHtml(row.stage)}"${noEffort.has(row.model) ? " disabled" : ""}>${effortOpts(row.effort || "")}</select></td>
           </tr>`).join("")}
       </tbody>
     </table>

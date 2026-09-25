@@ -23,7 +23,7 @@ Worktrees are created at `<project worktrees dir>/<TASK>` (default `<repo parent
 # Register a repo (or use ＋ Project in the dashboard)
 cd ~/sprint-manager/scripts && python3 -m sprint_manager.project add --repo ~/src/myrepo
 
-# Then open http://127.0.0.1:8766
+# Then open the URL the server prints (http://127.0.0.1:8766/?token=…)
 ```
 
 Requires: a logged-in Claude account (`claude` → `/login`; the agents deliberately blank `ANTHROPIC_API_KEY` so billing goes to the subscription), `gh auth login`, and whatever credentials your projects' profiles name — Jira (`[jira] email_env`/`token_env`, default `JIRA_EMAIL`/`JIRA_API_TOKEN`), Jenkins (`[ci] user_env`/`token_env`, default `JENKINS_USER`/`JENKINS_API_TOKEN`) — plus optionally `SLACK_BOT_TOKEN` (Slack-thread tasks and fetching linked threads). Set these via shell profile, a local gitignored `.env` (`cp .env.example .env`), or **⚙ Settings → Credentials** (which lists exactly the variables your profiles name) — all three are equivalent and a real shell export always wins. See `references/setup.md`.
@@ -89,7 +89,7 @@ docs/                            # Architecture, backend, frontend, agent lifecy
 | **Ship is a zero-LLM action** | commit check, final recap + PR text, push, open PR, tracker update — no agent for mechanical work |
 | **git worktree isolation** | Parallel-safe edits; main checkout untouched; shares `.git` |
 | **Agents never start CI** | GitHub checks run on push by themselves; Jenkins builds start only from the dashboard's **Trigger CI**; every trigger/re-run command is permission-blocked for agents |
-| **Merge is manual** | The manager merges the PR on GitHub, outside the app; `gh pr merge` is blocked for agents |
+| **Merge is manual** | The manager merges the PR on GitHub, outside the app; the agent command guard blocks merge commands (best-effort) |
 | **No MCP** | Every stage runs `strict_mcp_config=True`; Jira/Confluence/Slack go over REST |
 | **Cacheable system prompt** | The system prompt is task-agnostic (fixed per project + stage); the task and notes view travel in the first message |
 | **Summaries only in UI** | Manager sees progress, not the thinking/tool firehose |
@@ -129,6 +129,8 @@ python3 -m sprint_manager.fetch_sprint --project NAME --sprint "name" --assignee
 | `SPRINT_MANAGER_PR_POLL_SECONDS` | `900` | pr-open feedback poll interval (CI verdict + code review), 15 min |
 | `SPRINT_MANAGER_BG_POLL_SECONDS` | `20` | backgrounded shell job (slow compile/suite) poll interval — pure local check, so it's tight |
 | `SPRINT_MANAGER_STATE_DIR` | `<app>/state` | task state store location; point at a temp dir to isolate tests from real tasks |
+| `SPRINT_MANAGER_TOKEN` | random per start | the API/WebSocket access token (the server prints the URL with it); set for a stable, bookmarkable one |
+| `SPRINT_MANAGER_ALLOWED_HOSTS` | — | extra `Host` values the API accepts (comma-separated; tests use `testserver`) |
 | `SPRINT_MANAGER_BASH_MAX_OUTPUT` | `15000` | cap (chars) on each agent Bash result kept in context (→ CLI `BASH_MAX_OUTPUT_LENGTH`) |
 | `SPRINT_MANAGER_CONTEXT_WARN_TOKENS` | `150000` | context size at which the panel indicator turns amber and work's G2 compact hint fires |
 
@@ -208,9 +210,11 @@ UI shows summary → reply in chat (next gate, same session)
 
 1. **Branch naming** (`branch.py`): `bugfix/<task>-<slug>` or `feature/<task>-<slug>` (from the task's `kind`), max 80 chars total.
 2. **Tracker side effects**: driven by the orchestrator at stage boundaries through the task's source (`Orchestrator._hook` → `on_work_start` / `on_shipped` / `on_done`), best-effort and reported, never raised.
-3. **Permission gating** (`agent.py`): Denies `gh pr merge` / force-push (`_BLOCKED_FRAGMENTS`) and every CI start/re-run (`_CI_TRIGGER_FRAGMENTS`: `ci trigger`, `jenkins trigger`, `gh run rerun`, `gh workflow run`) unconditionally.
+3. **Agent command guard** (`guard.py`, wired per stage by `agent.make_guard`): parses each Bash command (quote-aware segments, `shlex` tokens) and denies merging, force-pushing, any CI start/re-run, state-changing HTTP calls, pushing outside pr-open, and — in explore — anything off a read-only allowlist. **Defense in depth, not a sandbox.** Each stage's agent also only gets the credentials its tools need (`agent._agent_env`).
 4. **Read-only stage** (explore): `Edit`/`Write` disabled in SDK as backstop.
-5. **No project names in core** (`test_projects.NoRecouplingGuardTest`): project specifics belong in a profile.
+5. **No project names in core** (`test_projects.NoRecouplingGuardTest`): project specifics belong in a profile. The words to forbid are yours, in the gitignored `scripts/tests/.forbidden-words` (the test skips without it).
+6. **Local API access control** (`server.py` `LocalOnlyMiddleware`): every request/WebSocket must have Host `127.0.0.1`/`localhost:<port>` (anti DNS-rebinding), a matching `Origin` on WebSockets and state-changing requests (blocks other web pages), and — for `/api` and `/ws` — the per-launch token (`X-SM-Token` header; `?token=` on the WebSocket). The server prints the URL with the token at startup; set `SPRINT_MANAGER_TOKEN` for a stable one. Ticket ids in paths must match `state.valid_ticket`.
+7. **Repo-local profiles are untrusted**: `<repo>/.sprint-manager/project.toml` may only set `prompts`, `preflight`, `base_branch`; credential URLs/env names, worktrees, `checkout_env`, `extra_dirs`, `skills` are personal-profile only.
 
 ## Relevant References
 

@@ -218,11 +218,33 @@ the LLM.
 
 ## Permission gating
 
-`TicketAgent` sets `permission_mode="acceptEdits"` and a `can_use_tool` guard that **denies** Bash
-commands containing `gh pr merge` / force-push (`_BLOCKED_FRAGMENTS`) or any CI start/re-run —
-`ci trigger`, `jenkins trigger`, `gh run rerun`, `gh workflow run` (`_CI_TRIGGER_FRAGMENTS`).
-Merging is manual by design and CI is started/re-run only from the dashboard, so both denies are
-unconditional (no approval flow unblocks them).
+`TicketAgent` sets `permission_mode="acceptEdits"` and a per-stage `can_use_tool` callback
+(`agent.make_guard(stage)` → `guard.check(command, stage)`). The guard splits each Bash command into
+segments (quote-aware; `$( … )` and backtick bodies become segments too), tokenizes them with
+`shlex`, and denies: merging (`gh pr merge`, `gh api …/merge`), force-pushing (`-f`, `--force*`,
+`+refspec`, `:branch` deletes), any CI start/re-run (`ci`/`jenkins trigger`, `gh run rerun`,
+`gh workflow run`, `gh api …/rerun|dispatches`, `python -c` calls to `trigger(`), state-changing
+`curl`/`wget` calls, `git push` / `pr push` outside pr-open, `pr open` anywhere, and in **explore**
+everything not on a read-only allowlist (reading/searching commands, read-only git, the read-only
+`sprint_manager` tools; writes only under `/tmp`).
+
+This is **defense in depth, not a sandbox**: the agent runs as you, with your `gh` login, and
+reads attacker-influenceable text (issue comments, Slack, CI logs). The other layers: each stage's
+agent gets only the credentials its tools need (`agent._agent_env` blanks the rest — explore: Jira
++ Slack; work: Slack; pr-open: CI + Slack); the local API refuses foreign origins and requires the
+per-launch token (`server.LocalOnlyMiddleware`); and every stage transition is yours.
+
+## Local API access control
+
+`server.LocalOnlyMiddleware` (pure decision: `server.access_denial`) runs on every HTTP request and
+WebSocket handshake: Host must be `127.0.0.1`/`localhost:<port>` (403 otherwise — DNS rebinding);
+a present `Origin` must be the dashboard on state-changing requests and is required on WebSockets
+(403 — cross-site pages, which WebSockets and "simple" POSTs would otherwise reach); `/api/*` and
+`/ws/*` need the per-launch token (401), sent by the page as `X-SM-Token` (and `?token=` on the
+WebSocket, which can't carry headers). The server prints `http://127.0.0.1:<port>/?token=…` at
+startup; the page stores the token and strips it from the address bar. `SPRINT_MANAGER_TOKEN` pins
+a stable token; `SPRINT_MANAGER_ALLOWED_HOSTS` adds hosts (tests use `testserver`). Ticket ids in
+URL paths must match `state.valid_ticket` (400), which `state._path_for` also enforces.
 
 ## Testing
 
@@ -241,7 +263,9 @@ prompt rendering, preflight, worktrees, Jenkins/Jira parameterisation, example p
 company), `test_sources` (Jira source, hooks), `test_task_sources` (text/GitHub/Slack, intake,
 linked-issue query, registry regression), `test_ci` (providers, prompt wording, CI block),
 `test_grooming` (not-groomed marker, acceptance criteria, File as issue), `test_api` (endpoints via
-FastAPI `TestClient`). Modules that import the orchestrator or server skip without the venv.
+FastAPI `TestClient`), `test_security` (API origin/host/token checks, agent command guard, scoped
+credentials, rendered-value validation, repo-local profile limits, input validation) and
+`test_review_fixes` (one regression per code-review finding in the orchestrator / CLI layer). Modules that import the orchestrator or server skip without the venv.
 
 The CLI layer by hand (no venv, no LLM) — isolate state first:
 

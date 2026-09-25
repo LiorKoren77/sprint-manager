@@ -22,10 +22,8 @@ except ImportError:  # no venv
 @unittest.skipIf(server is None, "needs the venv (fastapi, httpx)")
 class ApiTest(unittest.TestCase):
     def setUp(self):
-        for s in state.all_statuses():
-            state.delete(s.ticket)
-            taskfile.delete(s.ticket)
-        self.c = TestClient(server.app)
+        support.clean_state()
+        self.c = TestClient(server.app, headers={"X-SM-Token": support.TOKEN})
 
     def test_projects_list_and_register(self):
         data = self.c.get("/api/projects").json()

@@ -14,6 +14,20 @@ os.environ["SPRINT_MANAGER_STATE_DIR"] = str(ROOT / "state")
 os.environ["SPRINT_MANAGER_CONFIG_DIR"] = str(ROOT / "config")
 for var in ("SM_PROJECT", "SPRINT_MANAGER_DEFAULT_PROJECT"):
     os.environ.pop(var, None)
+# The API's access control (server.py): a fixed token, and the TestClient's Host header allowed.
+TOKEN = "test-token"
+os.environ["SPRINT_MANAGER_TOKEN"] = TOKEN
+os.environ["SPRINT_MANAGER_ALLOWED_HOSTS"] = "testserver"
+
+
+def clean_state() -> None:
+    """Remove every ticket (state, taskfile, notes) and the task-id counters from the test store."""
+    from sprint_manager import config, notes, state, taskfile
+    for s in state.all_statuses():
+        state.delete(s.ticket)
+        taskfile.delete(s.ticket)
+        notes.delete(s.ticket)
+    (config.STATE_DIR / ".task-ids").unlink(missing_ok=True)
 
 PROJECTS = ROOT / "config" / "projects"
 DEMO_REPO = ROOT / "demo-repo"

@@ -18,6 +18,7 @@ the build number; GitHub: the PR head commit + the set of runs).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -33,6 +34,7 @@ from sprint_manager import project as project_mod  # noqa: E402
 RUNNING, PASSED, FAILED, NONE = "running", "passed", "failed", "no-build"
 
 _RUN_URL = re.compile(r"/actions/runs/(\d+)")
+_JOB_URL = re.compile(r"/job/(\d+)")
 
 
 def auto_triggers(proj) -> bool:
@@ -97,7 +99,14 @@ def _github_verdict(proj, pr_number: int) -> dict:
     else:
         verdict = PASSED
     run_ids = sorted({m.group(1) for c in counted if (m := _RUN_URL.search(c["url"]))})
-    run_id = f"{sha[:12]}:{','.join(run_ids)}" if run_ids else sha[:12]
+    # Job ids too: re-running a workflow keeps its run id but gets new job ids, so a re-run that
+    # starts and finishes between two polls still reads as a new run.
+    job_ids = sorted({m.group(1) for c in counted if (m := _JOB_URL.search(c["url"]))})
+    run_id = sha[:12]
+    if run_ids:
+        run_id += ":" + ",".join(run_ids)
+    if job_ids:
+        run_id += ":" + hashlib.sha1(",".join(job_ids).encode()).hexdigest()[:10]
     return {"verdict": verdict, "run": {"id": run_id}, "checks": checks}
 
 

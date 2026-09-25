@@ -12,7 +12,7 @@ Jira site) live in its **profile** — see [`docs/projects.md`](docs/projects.md
 
 ```bash
 ~/sprint-manager/sprint-manager       # first run builds the venv automatically
-# → open http://127.0.0.1:8766
+# → open the URL the server prints (http://127.0.0.1:8766/?token=…)
 ```
 
 Register a repo with **＋ Project** in the dashboard, or

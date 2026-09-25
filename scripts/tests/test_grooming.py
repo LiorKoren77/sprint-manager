@@ -88,8 +88,7 @@ class AcceptanceCriteriaExtractionTest(unittest.TestCase):
 @unittest.skipIf(orch_mod is None, "needs the venv (claude_agent_sdk)")
 class FileAsIssueTest(unittest.TestCase):
     def setUp(self):
-        for s in state.all_statuses():
-            state.delete(s.ticket)
+        support.clean_state()
         self.o = orch_mod.Orchestrator()
         self.o._broadcast = lambda *a: None
 

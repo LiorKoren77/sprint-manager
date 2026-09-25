@@ -57,7 +57,8 @@ def run(preflight: dict, need: list[str] | None, checkout: Path) -> dict:
                        "hint": "" if ok else f"missing: {path}"})
     for var, hint in (preflight.get("env") or {}).items():
         ok = bool(os.environ.get(var))
-        checks.append({"name": f"env:{var}", "ok": ok, "detail": os.environ.get(var, "(unset)"),
+        # set/unset only — never the value: this output lands in the agent's context and transcript.
+        checks.append({"name": f"env:{var}", "ok": ok, "detail": "(set)" if ok else "(unset)",
                        "hint": "" if ok else hint})
     unknown = sorted(set(need or []) - set(ports))
     result = {"all_ok": all(c["ok"] for c in checks), "checks": checks}

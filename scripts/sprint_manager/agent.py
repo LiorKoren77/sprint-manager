@@ -50,10 +50,7 @@ _STAGE_FILES = {
 # is kept for any future genuine MCP need.
 MCP_OPEN_STAGES: frozenset[Stage] = frozenset()
 
-# Bash command fragments the agent may never run: merging and force-pushing are manual, and CI is
-# triggered only by the manager's Trigger CI button (Orchestrator.trigger_ci) — never by an agent.
-_BLOCKED_FRAGMENTS = ("gh pr merge", "push --force", "push -f", "push --force-with-lease")
-_CI_TRIGGER_FRAGMENTS = ("jenkins trigger", "ci trigger", "gh run rerun", "gh workflow run")
+# Which shell commands a stage may run lives in guard.py (defense in depth — see its docstring).
 
 
 def _script_cmd(module: str) -> str:
@@ -222,10 +219,33 @@ def build_context_message(meta: dict, notes: str, status=None) -> str:
     return text
 
 
-def _agent_env(ticket: str, cwd: str, worktree: str, project, ref: str = "") -> dict[str, str]:
+def _credential_names(project) -> dict[str, set[str]]:
+    """Every credential env-var name the app knows about, grouped by what uses it."""
+    jira = {"JIRA_EMAIL", "JIRA_API_TOKEN"}
+    ci = {"JENKINS_USER", "JENKINS_API_TOKEN"}
+    if project is not None:
+        jira |= {project.jira.get("email_env", "JIRA_EMAIL"), project.jira.get("token_env", "JIRA_API_TOKEN")}
+        ci |= {project.ci.get("user_env", "JENKINS_USER"), project.ci.get("token_env", "JENKINS_API_TOKEN")}
+    known = {f["key"] for f in config.credential_fields()}
+    return {"jira": jira, "ci": ci, "slack": {"SLACK_BOT_TOKEN"}, "all": known | jira | ci | {"SLACK_BOT_TOKEN"}}
+
+
+# Which credential groups each stage's tools need (explore: Confluence publishing + Slack; work:
+# Slack; pr-open: CI status/logs + Slack). Everything else is blanked in that agent's environment,
+# so a prompt-injected agent can't read credentials its stage has no use for.
+_STAGE_CREDENTIALS = {"explore": {"jira", "slack"}, "work": {"slack"}, "pr-open": {"ci", "slack"}}
+
+
+def _agent_env(ticket: str, cwd: str, worktree: str, project, ref: str = "",
+               stage: str = "") -> dict[str, str]:
     env = {"PYTHONPATH": str(SCRIPTS_DIR), "ANTHROPIC_API_KEY": "",
            "BASH_MAX_OUTPUT_LENGTH": str(config.AGENT_BASH_MAX_OUTPUT),
            "SM_TICKET": ticket, "SM_WORKTREE": worktree, "SM_REF": ref}
+    # The SDK MERGES this into the parent environment, so "unset" = set to "" (read as missing).
+    names = _credential_names(project)
+    keep = set().union(*(names[g] for g in _STAGE_CREDENTIALS.get(stage, set())))
+    for name in names["all"] - keep:
+        env[name] = ""
     if project is not None:
         env.update(SM_PROJECT=project.name, SM_REPO=str(project.repo))
         if project.checkout_env:
@@ -233,23 +253,18 @@ def _agent_env(ticket: str, cwd: str, worktree: str, project, ref: str = "") -> 
     return env
 
 
-async def _merge_guard(tool_name, tool_input, _context):
-    """Permission callback: allow everything except blocked Bash commands (merge / force-push /
-    CI trigger)."""
-    if tool_name == "Bash":
-        command = tool_input.get("command", "")
-        if any(fragment in command for fragment in _CI_TRIGGER_FRAGMENTS):
-            return PermissionResultDeny(
-                message="Blocked: CI is triggered only by the manager, with the Trigger CI button "
-                "in the dashboard. Tell them the branch is pushed and ready for CI, set "
-                "activity=waiting_user, and stop."
-            )
-        if any(fragment in command for fragment in _BLOCKED_FRAGMENTS):
-            return PermissionResultDeny(
-                message="Blocked: merging is manual — the manager merges on GitHub, outside this "
-                "system. Force-pushing is never allowed. Set activity=waiting_user and report."
-            )
-    return PermissionResultAllow()
+def make_guard(stage: str):
+    """The permission callback for a stage: guard.check on every Bash command."""
+    from sprint_manager import guard
+
+    async def _guard(tool_name, tool_input, _context):
+        if tool_name == "Bash":
+            reason = guard.check(tool_input.get("command", ""), stage)
+            if reason:
+                return PermissionResultDeny(message=reason)
+        return PermissionResultAllow()
+
+    return _guard
 
 
 # A streamed block handed to the UI: ("thinking"|"text"|"tool"|"result", text).
@@ -274,6 +289,7 @@ class TicketAgent:
         worktree: str = "",
         project=None,
         ref: str = "",
+        stage: str = "",
     ) -> None:
         self.ticket = ticket
         self.session_id: str | None = resume_session_id
@@ -295,7 +311,7 @@ class TicketAgent:
             cwd=cwd,
             system_prompt=system_prompt,
             permission_mode="acceptEdits",
-            can_use_tool=_merge_guard,
+            can_use_tool=make_guard(stage or ("explore" if read_only else "work")),
             # Subtractive tool trim — remove tools no stage uses (and that the prompt forbids),
             # which drops them from context without the allowlist risk of silently stripping a
             # needed tool. NotebookEdit (no notebooks), AskUserQuestion (prompt mandates chat +
@@ -327,7 +343,7 @@ class TicketAgent:
             # (cacheable) system prompt's commands reference — see build_system_prompt; the CLI
             # modules resolve their project from SM_PROJECT. A profile's ``checkout_env`` names one
             # more var set to this agent's checkout (cwd) for the project's own build tooling.
-            env=_agent_env(ticket, cwd, worktree, project, ref),
+            env=_agent_env(ticket, cwd, worktree, project, ref, stage),
             resume=resume_session_id,
         )
         self._client = ClaudeSDKClient(options)

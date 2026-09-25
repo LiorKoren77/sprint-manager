@@ -77,7 +77,7 @@ Every profile setting (build/test notes, preflight, CI provider, Jira) is docume
 ~/sprint-manager/sprint-manager               # launcher: builds venv if needed, starts service
 # or by hand:
 cd ~/sprint-manager/scripts && ./.venv/bin/python -m sprint_manager.server
-# then open http://127.0.0.1:8766
+# then open the URL the server prints (http://127.0.0.1:8766/?token=…)
 ```
 
 ## Concurrency

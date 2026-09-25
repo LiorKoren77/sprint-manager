@@ -253,3 +253,6 @@ button.settings-gear-btn { position: absolute; top: 14px; right: 62px; padding: 
 .cache-indicator { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; color: #fff; background: #888; }
 .cache-indicator.warning { background: var(--waiting-user); font-weight: 600; }
 .cache-indicator.empty { display: none; }
+
+/* Shown once when the API answers 401 (missing/stale access token). */
+.token-banner { background: var(--waiting-user); color: #fff; padding: 10px 20px; font-weight: 600; }

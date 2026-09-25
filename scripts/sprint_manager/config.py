@@ -239,6 +239,8 @@ def set_credential(key: str, value: str) -> None:
     """Persist one credential to .env and apply it to this process immediately (no restart)."""
     if key not in {f["key"] for f in credential_fields()}:
         raise ValueError(f"Unknown credential: {key}")
+    if any(c in value for c in "\r\n\0"):
+        raise ValueError("Credential values can't contain line breaks.")
     _write_env_var(key, value)
     if value:
         os.environ[key] = value

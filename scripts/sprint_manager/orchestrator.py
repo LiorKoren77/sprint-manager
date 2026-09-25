@@ -228,6 +228,9 @@ class Orchestrator:
         self._poll_error_seen: dict[tuple[str, str], str] = {}
         # Work sessions (by session id) that already got the "compact before testing?" hint.
         self._compact_hinted: set[str] = set()
+        # The event loop the service runs on (set when the first control task starts), so worker
+        # threads can hand broadcasts back to it.
+        self._loop: asyncio.AbstractEventLoop | None = None
         # Serializes every transition/chat coroutine PER TICKET (see _locked). A stage transition
         # (_advance/_goto_stage/_compact) spans several ``await`` points between disposing the old
         # agent, attaching the new one, and persisting the new stage to disk. A concurrent chat
@@ -464,6 +467,14 @@ class Orchestrator:
         return [e for e in transcript_store.read(ticket) if e.get("kind") in VISIBLE_EVENT_KINDS]
 
     def _broadcast(self, ticket: str, kind: str, text: str) -> None:
+        # Called from worker threads too (asyncio.to_thread paths: meta fetch, file-as-issue …);
+        # asyncio.Queue isn't thread-safe, so hop onto the event loop when not already on it.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            if self._loop is not None and self._loop.is_running():
+                self._loop.call_soon_threadsafe(self._broadcast, ticket, kind, text)
+                return
         event = {"kind": kind, "text": text}
         # "status" is a live-push signal, not scrollback: never persisted or buffered, so stale
         # snapshots can't accumulate on disk and get replayed over fresh state on tab open.
@@ -601,12 +612,19 @@ class Orchestrator:
         stored = state.read(ticket)
         if not stored or stored.stage != Stage.PR_OPEN:
             return {"error": "Re-arm is only available while a ticket is in the pr-open stage."}
-        final = state.update(ticket, review_fired=False, activity=Activity.WAITING_EXTERNAL)
+        if ticket in self._running or ticket in self._queued or ticket in self._advancing:
+            return {"error": "The agent is working — wait for it to stop, then dismiss the review event."}
+        # A fired CI result (e.g. a failure) still needs you: dismissing the REVIEW event must not
+        # demote the ticket to "waiting" and hide it.
+        fields = {"review_fired": False}
+        if not stored.ci_fired:
+            fields["activity"] = Activity.WAITING_EXTERNAL
+        final = state.update(ticket, **fields)
         self._broadcast(ticket, "system",
             "Code-review channel re-armed — polling continues until the next comment/approval/rejection.")
         self._broadcast_status(final)
         # Back to waiting_external = the end of any live triage episode (nothing to act on).
-        if ticket in self._agents or final.session_id:
+        if final.activity == Activity.WAITING_EXTERNAL and (ticket in self._agents or final.session_id):
             self._spawn(ticket, self._locked(ticket, self._end_episode(ticket)))
         return {"ticket": ticket, "review_fired": False}
 
@@ -619,6 +637,7 @@ class Orchestrator:
         leave a ticket appearing to work. (The read-time overlay would mask it anyway; this also
         heals the source.)
         """
+        self._loop = self._loop or asyncio.get_running_loop()
         task = asyncio.create_task(coro)
 
         def _done(t: asyncio.Task) -> None:
@@ -824,8 +843,11 @@ class Orchestrator:
         await self._recap_then_dispose(ticket, f"{stored.stage.value} — summary", "Advancing")
         nxt = next_stage(stored.stage)
         if nxt == Stage.DONE:
-            self._hook(ticket, "on_done")
-            final = state.update(ticket, stage=Stage.DONE, activity=Activity.IDLE, note="done")
+            await self._hook(ticket, "on_done")
+            self._advancing.discard(ticket)
+            # session_id cleared: a done task has no session to resume (see _chat).
+            final = state.update(ticket, stage=Stage.DONE, activity=Activity.IDLE, note="done",
+                                 session_id="")
             self._broadcast(ticket, "system", "Marked done.")
             self._broadcast_status(final)
             return
@@ -855,6 +877,10 @@ class Orchestrator:
         if agent and agent.total_turns > 1:
             self._broadcast(ticket, "system", f"{reason} — asking the current session for a full recap first.")
             await self._run_turn(ticket, _RECAP_PROMPT, origin="system")
+            # _run_turn released the "advancing" marker when the recap turn began; the rest of the
+            # transition (dispose, worktree, Jira, connect) is still in flight — keep the UI on
+            # working and keep refusing duplicate Approve/Start/Compact until it's done.
+            self._advancing.add(ticket)
         await self._save_summary_and_dispose(ticket, title)
 
     async def _chat(self, ticket: str, message: str, origin: str) -> None:
@@ -865,10 +891,16 @@ class Orchestrator:
         fresh session is a triage episode whose kickoff carries the latest poll signal, the branch
         state, and this message.
         """
+        stored = state.read(ticket)
+        if stored and stored.stage == Stage.DONE:
+            # A done task has no stage to work in; resuming its last session would put a
+            # write-enabled agent in the main checkout.
+            self._broadcast(ticket, "system", "This task is done. To do more work on it, use "
+                                              "↩ go to stage (explore / work), then Start ▶.")
+            return
         if ticket not in self._agents:
-            stored = state.read(ticket)
             stage = stored.stage if stored and stored.stage != Stage.TODO else Stage.EXPLORE
-            if stage != Stage.DONE and not (stored and _resumable(stored)):
+            if not (stored and _resumable(stored)):
                 if stage == Stage.PR_OPEN:
                     self._broadcast(ticket, "system", "Starting a fresh pr-open triage episode.")
                     message = await self._episode_kickoff(ticket, message)
@@ -905,7 +937,8 @@ class Orchestrator:
                 return
             if branch["ahead"] == 0:
                 self._broadcast(ticket, "system",
-                    "Can't ship — the branch has no commits beyond origin/develop.")
+                    f"Can't ship — the branch has no commits beyond "
+                    f"origin/{self._project(ticket).base_branch}.")
                 return
             # The recap needs a live session; after a restart it's only on disk, so resume it.
             if ticket not in self._agents and _resumable(stored):
@@ -935,19 +968,24 @@ class Orchestrator:
                 return
             await self._save_summary_and_dispose(ticket, "work — summary")
             # new_pr=False on a re-ship to the same PR after a jump back: don't re-announce it.
-            self._hook(ticket, "on_shipped", url, url != stored.pr_url)
-            auto = ci.auto_triggers(self._project(ticket))
+            await self._hook(ticket, "on_shipped", url, url != stored.pr_url)
+            proj = self._project(ticket)
+            auto, no_ci = ci.auto_triggers(proj), ci.provider(proj) == "none"
+            # Every ship arms the review channel afresh. CI: a push already started it (auto) →
+            # armed; no CI at all → marked done, so polling stops once review has reported;
+            # manual CI → armed, waiting for Trigger CI.
+            fields = {"ci_fired": no_ci, "review_fired": False}
+            if auto or no_ci:
+                fields.update(activity=Activity.WAITING_EXTERNAL,
+                              note="PR open — CI running on push" if auto else "PR open — waiting on code review")
+            else:
+                fields.update(activity=Activity.WAITING_USER, note="PR open — press Trigger CI when ready")
             state.update(ticket, stage=Stage.PR_OPEN, pr_url=url, session_id="", last_signal="",
-                         context_tokens=0, peak_context_tokens=0,
-                         # A push already started CI: rest at waiting_external with both channels
-                         # armed, so the poll picks up the run. Manual CI waits for Trigger CI.
-                         **({"activity": Activity.WAITING_EXTERNAL, "ci_fired": False,
-                             "review_fired": False, "note": "PR open — CI running on push"}
-                            if auto else {"activity": Activity.WAITING_USER,
-                                          "note": "PR open — press Trigger CI when ready"}))
-            self._broadcast(ticket, "system",
-                f"PR open: {url}\n" + ("CI starts automatically on push — watching CI + code review."
-                                       if auto else "Press **Trigger CI** when you're ready for a build."))
+                         context_tokens=0, peak_context_tokens=0, **fields)
+            self._broadcast(ticket, "system", f"PR open: {url}\n" + (
+                "CI starts automatically on push — watching CI + code review." if auto else
+                "This project has no CI — watching code review." if no_ci else
+                "Press **Trigger CI** when you're ready for a build."))
         finally:
             self._advancing.discard(ticket)
             final = state.read(ticket)
@@ -956,7 +994,7 @@ class Orchestrator:
 
     async def _episode_kickoff(self, ticket: str, message: str | None) -> str:
         """The opening message of a pr-open triage episode: the latest signal, the PR, and a compact
-        picture of the branch (commit log + diffstat vs develop) — enough to orient a fresh session
+        picture of the branch (commit log + diffstat vs the base branch) — enough to orient a fresh session
         without replaying the implementation history — plus the manager's message, if any."""
         stored = state.read(ticket)
         try:
@@ -970,8 +1008,9 @@ class Orchestrator:
         ]
         if branch.get("ok"):
             diffstat = "\n".join(branch["diffstat"].splitlines()[-60:])  # keep the summary line
-            parts.append(f"**Branch commits vs develop:**\n```\n{branch['log'] or '(none)'}\n```")
-            parts.append(f"**Diffstat vs develop:**\n```\n{diffstat or '(empty)'}\n```")
+            base = self._project(ticket).base_branch
+            parts.append(f"**Branch commits vs {base}:**\n```\n{branch['log'] or '(none)'}\n```")
+            parts.append(f"**Diffstat vs {base}:**\n```\n{diffstat or '(empty)'}\n```")
         else:
             parts.append(f"(Branch state unavailable: {branch.get('error')})")
         parts.append(f"**Manager's message:**\n{message}" if message
@@ -1005,19 +1044,22 @@ class Orchestrator:
         stored = state.read(ticket)
         kind = stored.kind if stored and stored.kind else (
             "bug" if (meta.get("type") or "").lower() == "bug" else "feature")
-        tree = worktree.add(ticket, kind, meta.get("summary", ""))
+        # git fetch + worktree add can take a while (and hang off-VPN): never on the event loop.
+        tree = await asyncio.to_thread(worktree.add, ticket, kind, meta.get("summary", ""))
         state.update(ticket, branch=tree["branch"], worktree=tree["path"])
         self._broadcast(ticket, "system", f"Created worktree {tree['path']} on {tree['branch']}")
-        self._hook(ticket, "on_work_start")
+        await self._hook(ticket, "on_work_start")
 
-    def _hook(self, ticket: str, hook: str, *args) -> None:
-        """Run a task-source lifecycle hook (on_work_start / on_shipped / on_done) best-effort:
-        report what it did, or why it was skipped — never raise (tracker updates aren't load-bearing)."""
+    async def _hook(self, ticket: str, hook: str, *args) -> None:
+        """Run a task-source lifecycle hook (on_work_start / on_shipped / on_done) best-effort, in a
+        worker thread (tracker HTTP / gh calls block for seconds): report what it did, or why it was
+        skipped — never raise (tracker updates aren't load-bearing)."""
         tracker = "tracker"
         try:
             stored = state.read(ticket)
             tracker = stored.tracker if stored else "tracker"
-            message = getattr(sources.get(tracker), hook)(stored, self._project(ticket), *args)
+            fn = getattr(sources.get(tracker), hook)
+            message = await asyncio.to_thread(fn, stored, self._project(ticket), *args)
         except (sources.SourceError, project_mod.ProjectError, config.ConfigError) as exc:
             self._broadcast(ticket, "system", f"{tracker} update skipped: {exc}")
             return
@@ -1059,6 +1101,7 @@ class Orchestrator:
             worktree=(stored.worktree if stored else "") or "",
             project=proj,
             ref=sources.get(stored.tracker).reference(stored) if stored else "",
+            stage=stage.value,
         )
         await agent.connect()
         self._agents[ticket] = agent
@@ -1262,6 +1305,7 @@ class Orchestrator:
     # ----- pr-open dual-channel poll (CI verdict + code review, every PR_POLL_SECONDS) -------
 
     def start_polling(self) -> None:
+        self._loop = asyncio.get_running_loop()
         if self._poll_task is None:
             self._poll_task = asyncio.create_task(self._poll_loop())
         if self._bg_poll_task is None:
@@ -1283,7 +1327,7 @@ class Orchestrator:
                     continue
                 if status.activity not in (Activity.WAITING_EXTERNAL, Activity.WAITING_USER):
                     continue
-                if status.ci_fired and status.review_fired:
+                if self._ci_done(status) and status.review_fired:
                     continue  # both channels already reported — stopped until re-armed
                 try:
                     await self._check_external(status.ticket)
@@ -1359,6 +1403,11 @@ class Orchestrator:
             self._report_poll_error(ticket, "ci", "CI poll error", "the CI server", ci_result)
         else:
             self._poll_error_seen.pop((ticket, "ci"), None)
+            if ci_result.get("verdict") == ci.RUNNING and stored.ci_status != ci.RUNNING:
+                # Remember we saw it running: the terminal verdict of THIS run then always differs
+                # from the watermark and fires — even a re-run with the same run id and verdict.
+                # A silent watermark write: not a signal, no notification.
+                state.update(ticket, ci_status=ci.RUNNING)
             if ci_result.get("verdict") in (ci.PASSED, ci.FAILED):
                 verdict = ci_result["verdict"]
                 run_id = str((ci_result.get("run") or {}).get("id") or "")
@@ -1373,10 +1422,11 @@ class Orchestrator:
         else:
             self._poll_error_seen.pop((ticket, "review"), None)
             if rev is not None:
-                if rev["count"] > stored.pr_comment_count or rev["decision"] != stored.review_decision:
+                seen_decision = stored.review_decision or "none"  # "" = never polled = "none"
+                if rev["count"] > stored.pr_comment_count or rev["decision"] != seen_decision:
                     updates.update(pr_comment_count=rev["count"], review_decision=rev["decision"],
                                    review_fired=True)
-                    if rev["decision"] in ("approved", "changes") and rev["decision"] != stored.review_decision:
+                    if rev["decision"] in ("approved", "changes") and rev["decision"] != seen_decision:
                         notices.append(f"Code review: **{rev['decision']}**.")
                     else:
                         notices.append("New code review comment(s) on the PR.")
@@ -1397,6 +1447,15 @@ class Orchestrator:
         # other signal is notify-only; you engage the agent when you choose.
         if ci_failed:
             self._spawn(ticket, self._locked(ticket, self._chat(ticket, _CI_FAILURE_PROMPT, "system")))
+
+    def _ci_done(self, status: TicketStatus) -> bool:
+        """Has the CI channel nothing more to report this wait-cycle? (Always, with no CI.)"""
+        if status.ci_fired:
+            return True
+        try:
+            return ci.provider(self._project(status.ticket)) == "none"
+        except project_mod.ProjectError:
+            return False
 
     def _review_signal(self, stored: TicketStatus, number: int) -> dict | None:
         """The PR's review signal, with the task's tracker-side comments folded into the count: a

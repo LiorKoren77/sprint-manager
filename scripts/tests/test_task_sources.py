@@ -32,9 +32,7 @@ THREAD = {"channel": "C1", "channel_name": "eng", "url": "https://x.slack.com/ar
 
 
 def _clean():
-    for s in state.all_statuses():
-        state.delete(s.ticket)
-        taskfile.delete(s.ticket)
+    support.clean_state()
 
 
 class IdsAndTextSourceTest(unittest.TestCase):

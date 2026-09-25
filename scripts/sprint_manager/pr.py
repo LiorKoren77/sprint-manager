@@ -190,8 +190,9 @@ def ready(ticket: str) -> dict:
     """One JSON verdict on whether the PR is mergeable — collapses the several probes the agent
     would otherwise improvise when you ask "can I merge this?".
 
-    Combines GitHub's review decision + mergeability with the Jenkins CI verdict. ``ready`` is the
-    AND of: CI passed, review approved, no merge conflicts. (Merging itself stays manual on GitHub.)
+    Combines GitHub's review decision + mergeability with the CI verdict from the project's CI
+    provider (``ci.py``). ``ready`` is the AND of: CI passed (or the project has no CI), review
+    approved, no merge conflicts. (Merging itself stays manual on GitHub.)
     """
     cwd = worktree_path(ticket)
     number = pr_number(ticket)
@@ -200,11 +201,12 @@ def ready(ticket: str) -> dict:
     gh = json.loads(_run(
         ["gh", "pr", "view", str(number), "--json",
          "url,state,reviewDecision,mergeable,mergeStateStatus"], cwd))
-    from sprint_manager import jenkins  # local import: jenkins imports this module
-    ci = jenkins.verdict(number)["verdict"]
+    from sprint_manager import ci as ci_module  # local import: ci imports this module
+    proj = project_mod.resolve(ticket=ticket)
+    ci = ci_module.verdict(proj, number)["verdict"]
     review_ok = gh.get("reviewDecision") == "APPROVED"
     no_conflicts = gh.get("mergeable") != "CONFLICTING"
-    ci_ok = ci == jenkins.PASSED
+    ci_ok = ci == ci_module.PASSED or ci_module.provider(proj) == "none"
     return {
         "pr": number,
         "url": gh.get("url"),

@@ -5,6 +5,7 @@ body take the source's reference and footer).
     cd scripts && PYTHONPATH=$PWD .venv/bin/python -m unittest discover -s tests
 """
 
+import asyncio
 import unittest
 from unittest import mock
 
@@ -76,7 +77,7 @@ class OrchestratorSourceUseTest(unittest.TestCase):
         broken = mock.MagicMock()
         broken.on_done.side_effect = sources.SourceError("site down")
         with mock.patch.object(orch_mod.sources, "get", return_value=broken):
-            o._hook("HK-1", "on_done")
+            asyncio.run(o._hook("HK-1", "on_done"))
         self.assertEqual(seen, ["jira update skipped: site down"])
         state.delete("HK-1")
 

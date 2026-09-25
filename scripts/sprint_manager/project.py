@@ -6,8 +6,12 @@ CI, the Jira/Confluence site — comes from a **project profile**:
 
 * ``~/.config/sprint-manager/projects/<name>/project.toml`` — personal; registers the project (and
   may hold everything, e.g. for a repo you can't commit to), and
-* ``<repo>/.sprint-manager/project.toml`` — optional, committed with the repo; its keys override
-  the personal profile's, table by table.
+* ``<repo>/.sprint-manager/project.toml`` — optional, committed with the repo. Because anyone who
+  can push to the repo controls it, it may only set what is safe to take from the repo: its
+  prompt files, preflight checks (ports / paths — env checks only report set/unset) and the base
+  branch. Everything that decides where credentials go or what the agent may read (Jira / CI
+  URLs and credential env names, worktrees, checkout_env, extra_dirs, skills) is personal-only;
+  such keys in the repo profile are ignored and listed in ``Project.warnings``.
 
 Relative prompt paths resolve against the directory of the profile that names them. A profile that
 only says ``repo = "..."`` is valid: every other setting has a working default (see ``Project``).
@@ -29,6 +33,14 @@ CONFIG_DIR = Path(os.environ.get("SPRINT_MANAGER_CONFIG_DIR", "~/.config/sprint-
 PROJECTS_DIR = CONFIG_DIR / "projects"
 APP_CONFIG_FILE = CONFIG_DIR / "config.toml"   # app-wide settings: default_project
 REPO_PROFILE = Path(".sprint-manager") / "project.toml"
+# The only top-level keys a repo-local profile may set (see the module docstring).
+REPO_LOCAL_KEYS = {"prompts", "preflight", "base_branch"}
+# Env vars a profile's checkout_env must never overwrite.
+_RESERVED_ENV = {"PATH", "HOME", "USER", "SHELL", "PYTHONPATH", "PYTHONHOME", "LD_PRELOAD",
+                 "LD_LIBRARY_PATH", "ANTHROPIC_API_KEY", "BASH_MAX_OUTPUT_LENGTH", "GH_TOKEN",
+                 "GITHUB_TOKEN", "GIT_DIR", "GIT_WORK_TREE", "GIT_SSH_COMMAND"}
+_ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
+_DETECTED_BRANCH: dict[str, str] = {}   # repo path -> detected default branch (process-wide cache)
 
 # Profile prompt files the prompts know how to use (see agent.build_system_prompt).
 PROMPT_KEYS = ("test_commands", "notes", "explore", "work", "pr-open")
@@ -58,7 +70,7 @@ class Project:
     github: dict = field(default_factory=dict)
     slack: dict = field(default_factory=dict)
     profile_files: list[Path] = field(default_factory=list)  # where this came from (diagnostics)
-    _base_branch: str = ""
+    warnings: list[str] = field(default_factory=list)       # e.g. ignored repo-local keys
 
     @property
     def base_branch(self) -> str:
@@ -66,9 +78,10 @@ class Project:
         remote's default branch (``origin/HEAD``, then ``gh``), else ``main``. Cached."""
         if self.base_branch_setting:
             return self.base_branch_setting
-        if not self._base_branch:
-            self._base_branch = _detect_default_branch(self.repo) or "main"
-        return self._base_branch
+        key = str(self.repo)
+        if key not in _DETECTED_BRANCH:  # cached per repo for the process: detection can take seconds
+            _DETECTED_BRANCH[key] = _detect_default_branch(self.repo) or "main"
+        return _DETECTED_BRANCH[key]
 
     def prompt_text(self, key: str) -> str:
         """The contents of the profile's prompt file ``key`` (see PROMPT_KEYS), or ""."""
@@ -172,12 +185,22 @@ def load(name: str) -> Project:
         raise ProjectError(f"{personal}: `repo = \"<path to the main checkout>\"` is required.")
     repo = Path(data["repo"]).expanduser()
     repo_profile = repo / REPO_PROFILE
+    warnings: list[str] = []
     if repo_profile.exists():
         local = _read_toml(repo_profile)
-        local.pop("repo", None)  # the repo can't relocate itself
+        ignored = sorted(set(local) - REPO_LOCAL_KEYS)
+        if ignored:
+            warnings.append(f"{repo_profile}: ignored {ignored} — only {sorted(REPO_LOCAL_KEYS)} may be "
+                            f"set in a repo-local profile; put the rest in {personal}.")
+        local = {k: v for k, v in local.items() if k in REPO_LOCAL_KEYS}
         prompts.update(_resolve_prompts(local, repo_profile.parent))
         data = _merge(data, local)
         files.append(repo_profile)
+    checkout_env = data.get("checkout_env", "")
+    if checkout_env and (not _ENV_NAME.match(checkout_env) or checkout_env in _RESERVED_ENV
+                         or checkout_env.startswith("SM_")):
+        raise ProjectError(f"{name}: checkout_env {checkout_env!r} is not allowed (must be an "
+                           f"UPPER_CASE name, not a system/credential/SM_ variable).")
 
     worktrees = data.get("worktrees")
     ci = {"provider": "github", **(data.get("ci") or {})}
@@ -188,7 +211,7 @@ def load(name: str) -> Project:
         repo=repo,
         worktrees=Path(worktrees).expanduser() if worktrees else repo.parent / f"{repo.name}-worktrees",
         base_branch_setting=data.get("base_branch", ""),
-        checkout_env=data.get("checkout_env", ""),
+        checkout_env=checkout_env,
         extra_dirs=[Path(d).expanduser() for d in data.get("extra_dirs", [])],
         skills=list(data.get("skills", [])),
         prompts=prompts,
@@ -198,6 +221,7 @@ def load(name: str) -> Project:
         github=data.get("github") or {},
         slack=data.get("slack") or {},
         profile_files=files,
+        warnings=warnings,
     )
 
 

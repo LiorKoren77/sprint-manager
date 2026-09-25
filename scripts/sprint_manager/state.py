@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,7 +17,20 @@ from sprint_manager import config
 from sprint_manager.models import TicketStatus
 
 
+# A ticket id is used as a file name, a worktree directory, a branch component and an env var, and
+# arrives from URL paths — so it is restricted to one safe shape (no dots, slashes or spaces), and
+# names that collide with the store's own files are reserved.
+_TICKET_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
+_RESERVED = {"config"}
+
+
+def valid_ticket(ticket: str) -> bool:
+    return bool(_TICKET_ID.match(ticket or "")) and ticket.lower() not in _RESERVED
+
+
 def _path_for(ticket: str) -> Path:
+    if not valid_ticket(ticket):
+        raise ValueError(f"Invalid ticket id: {ticket!r}")
     return config.STATE_DIR / f"{ticket}.json"
 
 

@@ -99,6 +99,20 @@ def new_task_id(project: str, tracker: str, number: int | None = None) -> str:
     prefix = f"{project}-{ID_TAGS[tracker]}-"
     if number is not None:
         return f"{prefix}{number}"
+    # Never reuse an id: a removed task leaves its worktree/branch behind (remove keeps them on
+    # purpose), and a new task with the same id would silently inherit them. So the counter is
+    # persisted, and is at least the highest id still on disk.
+    import json
+    from sprint_manager import config
+    counters_file = config.STATE_DIR / ".task-ids"
+    try:
+        counters = json.loads(counters_file.read_text())
+    except (OSError, ValueError):
+        counters = {}
     used = [int(s.ticket[len(prefix):]) for s in state.all_statuses()
             if s.ticket.startswith(prefix) and s.ticket[len(prefix):].isdigit()]
-    return f"{prefix}{max(used, default=0) + 1}"
+    nxt = max([counters.get(prefix, 0), *used]) + 1
+    counters[prefix] = nxt
+    config.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    counters_file.write_text(json.dumps(counters, indent=2))
+    return f"{prefix}{nxt}"

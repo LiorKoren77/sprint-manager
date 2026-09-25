@@ -7,9 +7,13 @@ Then open http://127.0.0.1:8766 .
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
+import re
+import secrets
 import sys
+from urllib.parse import parse_qs
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -42,6 +46,78 @@ def _load_runtime_config() -> None:
 
 orchestrator = Orchestrator(max_active=int(os.environ.get("SPRINT_MANAGER_MAX_ACTIVE", "1")))
 
+# ----- local-only access control -----------------------------------------------------------------
+#
+# The API drives agents that have a shell and your credentials, so "listening on 127.0.0.1" is not
+# enough: any web page you visit can make your browser talk to localhost (WebSockets are exempt
+# from CORS, and "simple" cross-site POSTs go through). Three checks, on every HTTP request and
+# WebSocket handshake:
+#   1. Host must be 127.0.0.1/localhost:<port>  — defeats DNS rebinding.
+#   2. Origin, when a browser sends one, must be this dashboard — required on WebSockets and on
+#      state-changing requests, which is what stops a foreign page.
+#   3. /api and /ws need the per-launch token (printed at startup: open the URL it prints). It also
+#      keeps out other local processes/users, and a custom header can't be sent cross-site at all.
+# Static files (the page itself) need no token; they carry no data.
+TOKEN = os.environ.get("SPRINT_MANAGER_TOKEN") or secrets.token_urlsafe(24)
+_EXTRA_HOSTS = {h.strip() for h in os.environ.get("SPRINT_MANAGER_ALLOWED_HOSTS", "").split(",") if h.strip()}
+_TICKET_ROUTE = re.compile(
+    r"^/(?:api/(?:ticket|start|interrupt|compact|goto-stage|approve|ship|trigger-ci|rearm-review|"
+    r"task-text|file-issue)|ws)/([^/]+)$")
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def allowed_hosts() -> set[str]:
+    return {f"127.0.0.1:{config.WEB_PORT}", f"localhost:{config.WEB_PORT}"} | _EXTRA_HOSTS
+
+
+def access_denial(kind: str, method: str, path: str, headers: dict[str, str],
+                  query: str = "") -> tuple[int, str] | None:
+    """``(status, reason)`` if the request must be refused, else None. Pure — unit-tested."""
+    hosts = allowed_hosts()
+    if headers.get("host", "") not in hosts:
+        return 403, "Forbidden host (the dashboard only answers on 127.0.0.1/localhost)."
+    origin = headers.get("origin")
+    origins = {f"http://{h}" for h in hosts}
+    if kind == "websocket" and origin not in origins:
+        return 403, "Forbidden origin."
+    if kind == "http" and method not in _SAFE_METHODS and origin is not None and origin not in origins:
+        return 403, "Forbidden origin."
+    m = _TICKET_ROUTE.match(path)
+    if m and not state.valid_ticket(m.group(1)):
+        return 400, f"Invalid ticket id: {m.group(1)!r}"
+    if path.startswith("/api/") or path.startswith("/ws/"):
+        given = headers.get("x-sm-token", "")
+        if not given and kind == "websocket":  # browsers can't set headers on a WebSocket
+            given = (parse_qs(query).get("token") or [""])[0]
+        if not given or not hmac.compare_digest(given, TOKEN):
+            return 401, "Missing or wrong access token — open the URL the server printed at startup."
+    return None
+
+
+class LocalOnlyMiddleware:
+    """ASGI middleware applying ``access_denial`` to HTTP requests and WebSocket handshakes."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        denial = access_denial(scope["type"], scope.get("method", "GET"), scope.get("path", ""),
+                               headers, scope.get("query_string", b"").decode("latin-1"))
+        if denial is None:
+            return await self.app(scope, receive, send)
+        status, reason = denial
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 4000 + status, "reason": reason})
+            return
+        body = json.dumps({"error": reason}).encode()
+        await send({"type": "http.response.start", "status": status,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
@@ -62,6 +138,7 @@ async def _lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Sprint Manager", lifespan=_lifespan)
+app.add_middleware(LocalOnlyMiddleware)
 
 
 def _status_rows() -> list[dict]:
@@ -335,8 +412,16 @@ async def api_get_config() -> JSONResponse:
 async def api_set_model_config(request: Request) -> JSONResponse:
     """Save model+effort overrides. Body: [{stage, model, effort?}, ...]. Takes effect immediately."""
     items = await request.json()
-    cfg = {item["stage"]: {"model": item["model"], "effort": item.get("effort")}
-           for item in items if item.get("model")}
+    models = {m["value"] for m in _models.AVAILABLE_MODELS}
+    stages = {s.value for s in _models.WORKING_STAGES}
+    efforts = {None, "", "low", "medium", "high", "xhigh", "max"}
+    if not isinstance(items, list) or not all(
+            isinstance(i, dict) and i.get("stage") in stages and i.get("model") in models
+            and i.get("effort") in efforts for i in items):
+        return JSONResponse({"error": "Expected [{stage, model, effort?}] with known stages, "
+                                      "models and efforts."}, status_code=400)
+    cfg = {item["stage"]: {"model": item["model"], "effort": item.get("effort") or None}
+           for item in items}
     _models.set_model_overrides(cfg)
     CONFIG_FILE.write_text(json.dumps({"models": cfg}, indent=2))
     return JSONResponse({"saved": True})
@@ -369,6 +454,9 @@ app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
 def main() -> None:
     import uvicorn
 
+    url = f"http://127.0.0.1:{config.WEB_PORT}/?token={TOKEN}"
+    print(f"\n  Sprint Manager → open {url}\n  (the token changes each start unless "
+          f"SPRINT_MANAGER_TOKEN is set)\n", flush=True)
     uvicorn.run(app, host=config.WEB_HOST, port=config.WEB_PORT)
 
 

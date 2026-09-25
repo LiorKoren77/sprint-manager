@@ -52,7 +52,7 @@ class GitHubChecksTest(unittest.TestCase):
         a = self._verdict(rollup(check("a", run=11)))["run"]["id"]
         b = self._verdict(rollup(check("a", run=12)))["run"]["id"]
         c = self._verdict({**rollup(check("a", run=11)), "headRefOid": "ffff00001111"})["run"]["id"]
-        self.assertEqual(a, "abcdef123456:11")
+        self.assertTrue(a.startswith("abcdef123456:11:"), a)   # sha : run ids : job-id hash
         self.assertEqual(len({a, b, c}), 3)
 
     def test_rerun_only_failed_actions_runs(self):
@@ -113,7 +113,8 @@ class CiPromptAndGuardTest(unittest.TestCase):
             self.assertNotIn("sprint_manager.jenkins", text)
 
     def test_agent_cannot_start_ci_on_any_provider(self):
-        from sprint_manager.agent import _merge_guard
+        from sprint_manager.agent import make_guard
+        _merge_guard = make_guard("pr-open")
         for cmd in ("python3 -m sprint_manager.ci trigger --ticket T", "gh run rerun 12 --failed",
                     "gh workflow run ci.yml", "python3 -m sprint_manager.jenkins trigger --ticket T"):
             verdict = asyncio.run(_merge_guard("Bash", {"command": cmd}, None))

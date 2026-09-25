@@ -83,8 +83,10 @@ def simplify_issue(issue: dict, project) -> dict:
 
 def fetch_sprint(project, sprint: str, assignee: str = "me") -> list[dict]:
     """Return the simplified issues in ``sprint`` assigned to ``assignee`` ("me" = current user)."""
-    who = "currentUser()" if assignee == "me" else f'"{assignee}"'
-    jql = f'sprint = "{sprint}" AND assignee = {who} ORDER BY status, priority DESC'
+    def q(v: str) -> str:  # a JQL string literal: escape backslashes and quotes
+        return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    who = "currentUser()" if assignee == "me" else q(assignee)
+    jql = f"sprint = {q(sprint)} AND assignee = {who} ORDER BY status, priority DESC"
     issues = JiraClient(project).search(jql)
     return [simplify_issue(issue, project) for issue in issues]
 
